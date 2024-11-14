@@ -1,191 +1,186 @@
-const express = require('express');
-const mysql = require('mysql2');
-const cors = require('cors');
-const bcrypt = require('bcrypt'); // For password hashing
-const jwt = require('jsonwebtoken'); // For JWT
-const path = require('path');
-const multer = require('multer')
+const express = require("express");
+const cors = require("cors");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const path = require("path");
+const multer = require("multer");
+const { PrismaClient } = require("@prisma/client"); // Prisma Client
 
-// Create MySQL connection
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'bb12345677',
-    database: 'mycrudapi',
-});
+const prisma = new PrismaClient(); // สร้าง Prisma Client instance
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use('/images', express.static(path.join(__dirname, 'images')));
+app.use("/images", express.static(path.join(__dirname, "images")));
+
+// ตั้งค่าการอัปโหลดไฟล์ด้วย multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "images"); // ตั้งที่เก็บไฟล์ในโฟลเดอร์ images
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // ใช้ชื่อไฟล์ที่เป็น timestamp
+  },
+});
+
+const upload = multer({ storage }); // สร้างออบเจ็กต์ upload สำหรับจัดการไฟล์ที่อัปโหลด
 
 // User registration
-app.post('/api/register', async (req, res) => {
-    const { email, name, password } = req.body;
+app.post("/api/register", async (req, res) => {
+  const { email, name, password } = req.body;
 
-    try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const query = 'INSERT INTO users (email, name, password) VALUES (?, ?, ?)';
-        
-        db.query(query, [email, name, hashedPassword], (err, result) => {
-            if (err) {
-                return res.status(500).json({ error: 'Error registering user.' });
-            }
-            res.status(201).json({ id: result.insertId, email, name });
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Error hashing password.' });
-    }
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        name,
+        password: hashedPassword,
+      },
+    });
+    res.status(201).json({ id: user.id, email, name });
+  } catch (error) {
+    res.status(500).json({ error: "Error registering user." });
+  }
 });
 
 // User login
-app.post('/api/login', (req, res) => {
-    const { email, password } = req.body;
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
 
-    const query = 'SELECT * FROM users WHERE email = ?';
-    db.query(query, [email], async (err, results) => {
-        if (err || results.length === 0) {
-            return res.status(401).json({ error: 'Invalid email or password.' });
-        }
-
-        const user = results[0];
-
-        // Check password
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ error: 'Invalid email or password.' });
-        }
-
-        // Generate JWT token
-        const token = jwt.sign({ id: user.id }, 'your_jwt_secret', { expiresIn: '1h' });
-
-        // Return token and user info
-        res.json({ 
-            token, 
-            user: { 
-                id: user.id, 
-                email: user.email, 
-                name: user.name 
-            } 
-        });
+  try {
+    const user = await prisma.user.findUnique({
+      where: { email },
     });
-});
-// Connect to the database
-db.connect((err) => {
-    if (err) {
-        console.error('Database connection failed: ' + err.stack);
-        return;
+
+    if (!user) {
+      return res.status(401).json({ error: "Invalid email or password." });
     }
-    console.log('Connected to MySQL database.');
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+
+    const token = jwt.sign({ id: user.id }, "your_jwt_secret", {
+      expiresIn: "1h",
+    });
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Error logging in." });
+  }
 });
-
-// Initialize express app
-
-// Set up multer for image uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'images');
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    },
-});
-const upload = multer({ storage });
-
-
-// Error handling middleware
-const handleError = (res, err) => {
-    console.error(err);
-    res.status(500).json({ error: 'An unexpected error occurred. Please try again.' });
-};
 
 // CRUD routes
 
-// Create
-app.post('/api/items', upload.single('image'), (req, res) => {
-    const { title, description } = req.body;
-    const image = req.file ? req.file.filename : null;
+// Create Item (ใช้ upload.single() เพื่อจัดการกับไฟล์อัปโหลด)
+app.post("/api/items", upload.single("image"), async (req, res) => {
+  const { title, description } = req.body;
+  const image = req.file ? req.file.filename : null;
 
-    const query = 'INSERT INTO items (title, description, image) VALUES (?, ?, ?)';
-    db.query(query, [title, description, image], (err, result) => {
-        if (err) return handleError(res, err);
-        res.status(201).json({
-            id: result.insertId,
-            title,
-            description,
-            image,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-        });
+  try {
+    const item = await prisma.item.create({
+      data: {
+        title,
+        description,
+        image,
+      },
     });
-});
 
-// Read
-app.get('/api/items', (req, res) => {
-    const query = 'SELECT * FROM items';
-    db.query(query, (err, results) => {
-        if (err) return handleError(res, err);
-        res.json(results);
+    res.status(201).json({
+      id: item.id,
+      title,
+      description,
+      image,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
     });
+  } catch (err) {
+    res.status(500).json({ error: "Error creating item." });
+  }
 });
 
-// Update
-app.put('/api/items/:id', upload.single('image'), (req, res) => {
-    const { title, description } = req.body;
-    let image;
+// Read Items
+app.get("/api/items", async (req, res) => {
+  try {
+    const items = await prisma.item.findMany();
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: "Error fetching items." });
+  }
+});
 
-    if (req.file) {
-        // ถ้ามีการอัปโหลดรูปภาพใหม่
-        image = req.file.filename;
-    } else if (req.body.existingImage) {
-        // ส่งชื่อไฟล์รูปภาพเดิม
-        image = req.body.existingImage;
-    } else {
-        // ถ้าไม่มีรูปภาพใหม่หรือเดิม ใช้ค่า null
-        image = null;
-    }
+// Update Item
+app.put("/api/items/:id", upload.single("image"), async (req, res) => {
+  const { title, description } = req.body;
+  let image;
 
-    const query = 'UPDATE items SET title = ?, description = ?, image = ? WHERE id = ?';
-    db.query(query, [title, description, image, req.params.id], (err, result) => {
-        if (err) return handleError(res, err);
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Item not found' });
-        }
-        res.json({
-            id: req.params.id,
-            title,
-            description,
-            image,
-            updatedAt: new Date(),
-        });
+  if (req.file) {
+    image = req.file.filename;
+  } else if (req.body.existingImage) {
+    image = req.body.existingImage;
+  } else {
+    image = null;
+  }
+
+  try {
+    const item = await prisma.item.update({
+      where: { id: parseInt(req.params.id) },
+      data: { title, description, image },
     });
-});
 
-// Delete
-app.delete('/api/items/:id', (req, res) => {
-  const query = 'DELETE FROM items WHERE id = ?';
-  db.query(query, [req.params.id], (err, result) => {
-      if (err) return handleError(res, err);
-      if (result.affectedRows === 0) {
-          return res.status(404).json({ error: 'Item not found' });
-      }
-      res.status(200).json({ message: 'Item deleted successfully' }); // Send a success message
-  });
-});
-
-app.get('/api/items/search', (req, res) => {
-    const { query } = req.query; // รับค่าค้นหาจาก query string
-    const sqlQuery = `SELECT * FROM items WHERE title LIKE ? OR description LIKE ?`;
-    const searchTerm = `%${query}%`; // ใช้ wildcard สำหรับการค้นหา
-
-    db.query(sqlQuery, [searchTerm, searchTerm], (err, results) => {
-        if (err) return handleError(res, err);
-        res.json(results);
+    res.json({
+      id: item.id,
+      title,
+      description,
+      image,
+      updatedAt: item.updatedAt,
     });
+  } catch (err) {
+    res.status(500).json({ error: "Error updating item." });
+  }
 });
 
-// Start the server
-const PORT = 3001; // Change this line to use port 3001
+// Delete Item
+app.delete("/api/items/:id", async (req, res) => {
+  try {
+    const item = await prisma.item.delete({
+      where: { id: parseInt(req.params.id) },
+    });
+    res.status(200).json({ message: "Item deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: "Error deleting item." });
+  }
+});
+
+// Search Items
+app.get("/api/items/search", async (req, res) => {
+  const { query } = req.query;
+  try {
+    const items = await prisma.item.findMany({
+      where: {
+        OR: [
+          { title: { contains: query, mode: "insensitive" } },
+          { description: { contains: query, mode: "insensitive" } },
+        ],
+      },
+    });
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: "Error searching items." });
+  }
+});
+
+// Start server
+const PORT = 3001;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
